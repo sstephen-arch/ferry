@@ -5,6 +5,24 @@ Ferry is a self-built Steam Play runner for macOS. It is a fork of
 closed-source Wine runtime with a Wine runtime compiled from CodeWeavers' published
 open-source CrossOver 26.3.0 sources.
 
+> [!IMPORTANT]
+> **This repo is source code only. You have to download several things yourself before you can build
+> or use Ferry. Nothing here is a ready-to-run app.**
+>
+> 1. **Apple's Game Porting Toolkit (for D3DMetal).** Free, but you must download it yourself with an
+>    Apple ID from [developer.apple.com/download](https://developer.apple.com/download/all/?q=game%20porting%20toolkit)
+>    (tested with 4.0 beta 2). Apple's licence forbids redistributing it, so it is **not in this repo and never
+>    will be**. Copy its `redist` folder to `$FERRY_CACHE/gptk/redist/`. Without it Ferry still builds, but
+>    DirectX 12 games and the D3DMetal backend will not work (many modern DX11 games need it too, for example
+>    Lost Judgment and Ni no Kuni II); you are left with DXMT and Wine's own wined3d.
+> 2. **The build inputs:** CrossOver's open-source release, Proton, DXMT, NotProton and others. They are listed,
+>    with download sources and sha256 sums, in [`docs/inputs.md`](docs/inputs.md). Put them in your
+>    `$FERRY_CACHE` folder (default `~/Developer/ferry-cache`); the build never downloads anything itself.
+> 3. **Tools and apps:** Steam for Mac, Rosetta 2, Xcode, and the Homebrew packages under
+>    [Requirements](#requirements).
+>
+> There are no prebuilt releases: you build the Wine runner and the app on your own Mac.
+
 ## What it is
 
 Ferry enables Steam Play on macOS by launching Windows games through a Wine runtime
@@ -81,8 +99,10 @@ Docs: `docs/runner-layout.md`, `docs/install-layout.md`, `docs/graphics-layout.m
 ## Requirements
 
 - macOS with Rosetta (x86_64 games).
-- **Your own Game Porting Toolkit download** for D3DMetal (into `$FERRY_CACHE/gptk/redist/`).
-  Apple's licence forbids redistribution.
+- **Your own Game Porting Toolkit download** for D3DMetal (into `$FERRY_CACHE/gptk/redist/`), from
+  developer.apple.com with an Apple ID. Apple's licence forbids redistribution, so it is never in this repo.
+- **The build inputs in [`docs/inputs.md`](docs/inputs.md)**, placed in `$FERRY_CACHE`.
+- Steam for Mac and Xcode.
 - brew: `mingw-w64 autoconf automake libtool bison flex shellcheck meson ninja cmake fontforge gpatch`;
   a Python venv with `afdko<5` and `fonttools` (`$FERRY_CACHE/fontvenv`) for the font build.
 
