@@ -1,0 +1,12 @@
+scratch/
+dist/
+build/
+out/
+.build/
+*.dSYM
+*.log
+app/vendor/dobby/
+**/gptk/
+**/apple_gptk/
+*.xcuserstate
+.DS_Store

@@ -1,0 +1,27 @@
+--- a/dlls/ntdll/unix/loader.c	2026-10-11 02:56:04
++++ b/dlls/ntdll/unix/loader.c	2026-10-11 02:56:04
+@@ -387,12 +387,24 @@
+ static void set_dll_path(void)
+ {
+     char *p, *path = getenv( "WINEDLLPATH" );
++    /* Ferry: directories searched BEFORE Wine's own dll dir, so a graphics backend (DXMT,
++     * D3DMetal) can replace builtin d3d11/dxgi. CrossOver's closed launcher does this through
++     * prepend_dll_path() (CW Hack 24067); Ferry has no launcher, so it is an env var. */
++    char *first = getenv( "FERRY_DLLPATH_FIRST" );
+     int i, count = 0;
+ 
+     if (path) for (p = path, count = 1; *p; p++) if (*p == ':') count++;
++    if (first) for (p = first, count++; *p; p++) if (*p == ':') count++;
+ 
+     dll_paths = malloc( (count + 2) * sizeof(*dll_paths) );
+     count = 0;
++
++    if (first)
++    {
++        first = strdup( first );
++        for (p = strtok( first, ":" ); p; p = strtok( NULL, ":" )) dll_paths[count++] = strdup( p );
++        free( first );
++    }
+ 
+     if (!build_dir) dll_paths[count++] = dll_dir;
+ 

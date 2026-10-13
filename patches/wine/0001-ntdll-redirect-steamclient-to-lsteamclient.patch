@@ -1,0 +1,131 @@
+--- a/dlls/ntdll/loader.c	2026-10-11 21:46:51
++++ b/dlls/ntdll/loader.c	2026-10-11 21:46:51
+@@ -1094,6 +1094,119 @@
+ 
+ 
+ /*************************************************************************
++ *      Ferry: Steam client trampolines
++ *
++ * When a game loads Valve's steamclient64.dll (64-bit) or steamclient.dll /
++ * gameoverlayrenderer.dll (32-bit), also load lsteamclient.dll and overwrite the start of
++ * every export the two modules share with a jump into lsteamclient, as Proton's loader does.
++ * Lookups then return addresses inside Valve's module, so DRM that checks which module an
++ * export lives in (SteamStub, "Application load error 3:0000065432") sees steamclient.
++ * The real module's imports are not resolved and its DllMain does not run; the overlay keeps
++ * its imports, since its unshared exports still run. FERRY_STEAMCLIENT_REDIRECT=0 disables it.
++ * shortcut: an export shorter than the jump (12 bytes, 7 on 32-bit) has its neighbour
++ * overwritten too, as in Proton; Valve's exports are full functions.
++ */
++static BOOL ferry_redirect_disabled(void)
++{
++    UNICODE_STRING name = RTL_CONSTANT_STRING( L"FERRY_STEAMCLIENT_REDIRECT" ), value;
++    WCHAR buffer[8];
++
++    value.Buffer = buffer;
++    value.Length = 0;
++    value.MaximumLength = sizeof(buffer);
++    if (RtlQueryEnvironmentVariable_U( NULL, &name, &value )) return FALSE;
++    return value.Length == sizeof(WCHAR) && buffer[0] == '0';
++}
++
++static void ferry_write_jump( BYTE *src, void *tgt )
++{
++#ifdef _WIN64
++    static const BYTE code[] = { 0x48, 0xb8, 0,0,0,0,0,0,0,0, 0xff, 0xe0 };  /* mov rax, tgt; jmp rax */
++    memcpy( src, code, sizeof(code) );
++    memcpy( src + 2, &tgt, sizeof(tgt) );
++#else
++    static const BYTE code[] = { 0xb8, 0,0,0,0, 0xff, 0xe0 };                /* mov eax, tgt; jmp eax */
++    memcpy( src, code, sizeof(code) );
++    memcpy( src + 1, &tgt, sizeof(tgt) );
++#endif
++}
++
++/* called from build_module before the module's imports are resolved */
++static void ferry_steamclient_redirect( WINE_MODREF *wm, LPCWSTR load_path, DWORD *flags )
++{
++    UNICODE_STRING lsteam_name = RTL_CONSTANT_STRING( L"lsteamclient.dll" );
++    const WCHAR *base = wm->ldr.BaseDllName.Buffer;
++    HMODULE module = wm->ldr.DllBase;
++    BYTE *image = (BYTE *)module;
++    const IMAGE_EXPORT_DIRECTORY *exports;
++    const IMAGE_SECTION_HEADER *sec;
++    const IMAGE_NT_HEADERS *nt;
++    const DWORD *functions, *names;
++    const WORD *ordinals;
++    BOOL is_overlay = FALSE;
++    DWORD exp_size, i, old, count = 0;
++    HMODULE lsteam;
++
++#ifdef _WIN64
++    if (wcsicmp( base, L"steamclient64.dll" )) return;
++#else
++    if (!wcsicmp( base, L"gameoverlayrenderer.dll" )) is_overlay = TRUE;
++    else if (wcsicmp( base, L"steamclient.dll" )) return;
++#endif
++    if (ferry_redirect_disabled()) return;
++    if (!(exports = RtlImageDirectoryEntryToData( module, TRUE, IMAGE_DIRECTORY_ENTRY_EXPORT, &exp_size ))) return;
++
++    /* reuse a loaded lsteamclient without taking another reference; otherwise LdrLoadDll
++     * loads it and runs its DllMain as part of its own load, as on Windows */
++    if ((LdrGetDllHandleEx( LDR_GET_DLL_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT, load_path, NULL, &lsteam_name, &lsteam ) || !lsteam) &&
++        LdrLoadDll( load_path, 0, &lsteam_name, &lsteam ))
++    {
++        TRACE( "ferry: no lsteamclient.dll, %s loads normally\n", debugstr_w(base) );
++        return;
++    }
++
++    nt = RtlImageNtHeader( module );
++    sec = IMAGE_FIRST_SECTION( nt );
++    for (i = 0; i < nt->FileHeader.NumberOfSections; i++)
++    {
++        void *addr = image + sec[i].VirtualAddress;
++        SIZE_T size = sec[i].Misc.VirtualSize;
++        if (sec[i].Characteristics & IMAGE_SCN_MEM_EXECUTE)
++            NtProtectVirtualMemory( NtCurrentProcess(), &addr, &size, PAGE_EXECUTE_READWRITE, &old );
++    }
++
++    functions = get_rva( module, exports->AddressOfFunctions );
++    names = get_rva( module, exports->AddressOfNames );
++    ordinals = get_rva( module, exports->AddressOfNameOrdinals );
++    for (i = 0; i < exports->NumberOfNames; i++)
++    {
++        DWORD rva = ordinals[i] < exports->NumberOfFunctions ? functions[ordinals[i]] : 0;
++        void *target;
++
++        /* skip forwarders (their rva points into the export directory) */
++        if (!rva || (rva >= (BYTE *)exports - image && rva < (BYTE *)exports - image + exp_size)) continue;
++        if (!(target = RtlFindExportedRoutineByName( lsteam, get_rva( module, names[i] ) ))) continue;
++        ferry_write_jump( image + rva, target );
++        count++;
++    }
++
++    for (i = 0; i < nt->FileHeader.NumberOfSections; i++)
++    {
++        void *addr = image + sec[i].VirtualAddress;
++        SIZE_T size = sec[i].Misc.VirtualSize;
++        if (sec[i].Characteristics & IMAGE_SCN_MEM_EXECUTE)
++            NtProtectVirtualMemory( NtCurrentProcess(), &addr, &size, PAGE_EXECUTE_READ, &old );
++    }
++    NtFlushInstructionCache( NtCurrentProcess(), module, nt->OptionalHeader.SizeOfImage );
++
++    /* steamclient: no import fixups (keeps LDR_DONT_RESOLVE_REFS) and no DllMain */
++    if (!is_overlay) *flags |= DONT_RESOLVE_DLL_REFERENCES;
++    wm->ldr.EntryPoint = NULL;              /* MODULE_InitDLL then never calls its DllMain */
++    TRACE( "ferry: %lu exports of %s jump to lsteamclient.dll %p\n", count, debugstr_w(base), lsteam );
++}
++
++
++/*************************************************************************
+  *		find_named_export
+  *
+  * Find an exported function by name.
+@@ -2309,6 +2422,8 @@
+     wm->system = system;
+ 
+     update_load_config( *module );
++
++    if (!is_builtin) ferry_steamclient_redirect( wm, load_path, &flags );
+ 
+     /* fixup imports */
+ 
